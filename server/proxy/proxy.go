@@ -26,6 +26,7 @@ import (
 	frpIo "github.com/fatedier/golib/io"
 	"golang.org/x/time/rate"
 
+	"github.com/fatedier/frp/extend/cumu"
 	"github.com/fatedier/frp/pkg/config"
 	"github.com/fatedier/frp/pkg/msg"
 	plugin "github.com/fatedier/frp/pkg/plugin/server"
@@ -319,10 +320,33 @@ func HandleUserTCPConnection(pxy Proxy, userConn net.Conn, serverCfg config.Serv
 	name := pxy.GetName()
 	proxyType := pxy.GetConf().GetBaseInfo().ProxyType
 	metrics.Server.OpenConnection(name, proxyType)
-	inCount, outCount := frpIo.Join(local, userConn)
+	//inCount, outCount := frpIo.Join(local, userConn)
+	cc := cumu.NewCumuConn(userConn)
+	endSig := make(chan int)
+	go func(cc *cumu.Conn, ch chan int) {
+		for {
+			select {
+			case <-ch:
+				return
+			default:
+				time.Sleep(1 * time.Second)
+				statsCollector.Mark(stats.TypeAddTrafficIn, &stats.AddTrafficInPayload{
+					ProxyName:    pxy.GetName(),
+					TrafficBytes: cc.OutCount(),
+				})
+				statsCollector.Mark(stats.TypeAddTrafficOut, &stats.AddTrafficOutPayload{
+					ProxyName:    pxy.GetName(),
+					TrafficBytes: cc.InCount(),
+				})
+			}
+		}
+	}(cc, endSig)
+	frpIo.Join(local, cc)
+	
 	metrics.Server.CloseConnection(name, proxyType)
 	metrics.Server.AddTrafficIn(name, proxyType, inCount)
 	metrics.Server.AddTrafficOut(name, proxyType, outCount)
+	endSig <- 1
 	xl.Debug("join connections closed")
 }
 
@@ -342,9 +366,10 @@ func NewManager() *Manager {
 func (pm *Manager) Add(name string, pxy Proxy) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
-	if _, ok := pm.pxys[name]; ok {
+	// 这里的判断没什么必要了，因为前面已经经过鉴权，如果出现两个相同名字的代理就用新的代替旧的
+	/*if _, ok := pm.pxys[name]; ok {
 		return fmt.Errorf("proxy name [%s] is already in use", name)
-	}
+	}*/
 
 	pm.pxys[name] = pxy
 	return nil
