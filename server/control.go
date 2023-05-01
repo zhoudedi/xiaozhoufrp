@@ -22,6 +22,7 @@ import (
 	"runtime/debug"
 	"sync"
 	"time"
+	"strings"
 
 	"github.com/fatedier/golib/control/shutdown"
 	"github.com/fatedier/golib/crypto"
@@ -34,11 +35,15 @@ import (
 	"github.com/fatedier/frp/pkg/msg"
 	plugin "github.com/fatedier/frp/pkg/plugin/server"
 	"github.com/fatedier/frp/pkg/util/util"
+	frpNet "github.com/fatedier/frp/utils/net"
 	"github.com/fatedier/frp/pkg/util/version"
 	"github.com/fatedier/frp/pkg/util/xlog"
 	"github.com/fatedier/frp/server/controller"
 	"github.com/fatedier/frp/server/metrics"
 	"github.com/fatedier/frp/server/proxy"
+	
+	"github.com/fatedier/frp/extend/api"
+	"github.com/fatedier/frp/extend/limit"
 )
 
 type ControlManager struct {
@@ -79,6 +84,20 @@ func (cm *ControlManager) GetByID(runID string) (ctl *Control, ok bool) {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 	ctl, ok = cm.ctlsByRunID[runID]
+	return
+}
+
+func (cm *ControlManager) SearchById(runId string) (ctl *Control, ok bool) {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	for k, v := range cm.ctlsByRunId {
+		if strings.IndexAny(k, runId+"-") > -1 {
+			if v == nil {
+				return
+			}
+			ctl, ok = cm.ctlsByRunId[k]
+		}
+	}
 	return
 }
 
@@ -134,6 +153,9 @@ type Control struct {
 	writerShutdown  *shutdown.Shutdown
 	managerShutdown *shutdown.Shutdown
 	allShutdown     *shutdown.Shutdown
+	
+	inLimit  uint64
+	outLimit uint64
 
 	mu sync.RWMutex
 
@@ -151,7 +173,7 @@ func NewControl(
 	pluginManager *plugin.Manager,
 	authVerifier auth.Verifier,
 	ctlConn net.Conn,
-	loginMsg *msg.Login,
+	loginMsg *msg.Login, inLimit, outLimit uint64,
 	serverCfg config.ServerCommonConf,
 ) *Control {
 	poolCount := loginMsg.PoolCount
@@ -178,6 +200,8 @@ func NewControl(
 		writerShutdown:  shutdown.New(),
 		managerShutdown: shutdown.New(),
 		allShutdown:     shutdown.New(),
+		inLimit:         inLimit,  //rate.NewLimiter(rate.Limit(inLimit*limit.KB), int(inLimit*limit.KB)),
+		outLimit:        outLimit, //rate.NewLimiter(rate.Limit(outLimit*limit.KB), int(outLimit*limit.KB)),
 		serverCfg:       serverCfg,
 		xl:              xlog.FromContextSafe(ctx),
 		ctx:             ctx,
@@ -499,10 +523,40 @@ func (ctl *Control) manager() {
 
 func (ctl *Control) RegisterProxy(pxyMsg *msg.NewProxy) (remoteAddr string, err error) {
 	var pxyConf config.ProxyConf
+	
+	s, err := api.NewService(g.GlbServerCfg.ApiBaseUrl)
+	var workConn proxy.GetWorkConnFn = ctl.GetWorkConn
+
+	if err != nil {
+		return remoteAddr, err
+	}
+	
 	// Load configures from NewProxy message and check.
 	pxyConf, err = config.NewProxyConfFromMsg(pxyMsg, ctl.serverCfg)
 	if err != nil {
-		return
+		return remoteAddr, err
+	}
+	
+	if g.GlbServerCfg.EnableApi {
+
+		nowTime := time.Now().Unix()
+		ok, err := s.CheckProxy(ctl.loginMsg.User, pxyMsg, nowTime, g.GlbServerCfg.ApiToken)
+
+		if err != nil {
+			return remoteAddr, err
+		}
+
+		if !ok {
+			return remoteAddr, fmt.Errorf("invalid proxy configuration")
+		}
+
+		workConn = func() (frpNet.Conn, error) {
+			fconn, err := ctl.GetWorkConn()
+			if err != nil {
+				return nil, err
+			}
+			return limit.NewLimitConn(ctl.inLimit, ctl.outLimit, fconn), nil
+		}
 	}
 
 	// User info
@@ -514,10 +568,16 @@ func (ctl *Control) RegisterProxy(pxyMsg *msg.NewProxy) (remoteAddr string, err 
 
 	// NewProxy will return a interface Proxy.
 	// In fact it create different proxies by different proxy type, we just call run() here.
-	pxy, err := proxy.NewProxy(ctl.ctx, userInfo, ctl.rc, ctl.poolCount, ctl.GetWorkConn, pxyConf, ctl.serverCfg, ctl.loginMsg)
+	pxy, err := proxy.NewProxy(ctl.ctx, userInfo, ctl.rc, ctl.poolCount, workConn, pxyConf, ctl.serverCfg, ctl.loginMsg)
 	if err != nil {
 		return remoteAddr, err
 	}
+	
+	err = ctl.pxyManager.Add(pxyMsg.ProxyName, pxy)
+	if err != nil {
+		return
+	}
+
 
 	// Check ports used number in each client
 	if ctl.serverCfg.MaxPortsPerClient > 0 {
@@ -549,10 +609,6 @@ func (ctl *Control) RegisterProxy(pxyMsg *msg.NewProxy) (remoteAddr string, err 
 		}
 	}()
 
-	err = ctl.pxyManager.Add(pxyMsg.ProxyName, pxy)
-	if err != nil {
-		return
-	}
 
 	ctl.mu.Lock()
 	ctl.proxies[pxy.GetName()] = pxy
