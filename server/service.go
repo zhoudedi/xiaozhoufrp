@@ -24,10 +24,12 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"regexp"
 	"time"
 
 	"github.com/fatedier/golib/net/mux"
 	fmux "github.com/hashicorp/yamux"
+	"github.com/fatedier/frp/extend/api"
 	quic "github.com/quic-go/quic-go"
 
 	"github.com/fatedier/frp/assets"
@@ -166,7 +168,7 @@ func NewService(cfg config.ServerCommonConf) (svr *Service, err error) {
 	svr.rc.TCPMuxGroupCtl = group.NewTCPMuxGroupCtl(svr.rc.TCPMuxHTTPConnectMuxer)
 
 	// Init 404 not found page
-	vhost.NotFoundPagePath = cfg.Custom404Page
+	vhost.ServiceUnavailablePagePath = cfg.Custom503Page
 
 	var (
 		httpMuxOn  bool
@@ -510,8 +512,50 @@ func (svr *Service) RegisterControl(ctlConn net.Conn, loginMsg *msg.Login) (err 
 	if err = svr.authVerifier.VerifyLogin(loginMsg); err != nil {
 		return
 	}
+	
+	var (
+		inLimit  uint64
+		outLimit uint64
+	)
 
-	ctl := NewControl(ctx, svr.rc, svr.pxyManager, svr.pluginManager, svr.authVerifier, ctlConn, loginMsg, svr.cfg)
+	if g.GlbServerCfg.EnableApi {
+
+		nowTime := time.Now().Unix()
+
+		s, err := api.NewService(g.GlbServerCfg.ApiBaseUrl)
+		if err != nil {
+			return err
+		}
+
+		r := regexp.MustCompile(`^[A-Za-z0-9]{1,32}$`)
+		mm := r.FindAllStringSubmatch(loginMsg.User, -1)
+
+		if len(mm) < 1 {
+			return fmt.Errorf("invalid username")
+		}
+
+		// Connect to API server and verify the user.
+		valid, err := s.CheckToken(loginMsg.User, loginMsg.PrivilegeKey, nowTime, g.GlbServerCfg.ApiToken)
+
+		if err != nil {
+			return err
+		}
+
+		if !valid {
+			return fmt.Errorf("authorization failed")
+		}
+
+		inLimit, outLimit, err = s.GetProxyLimit(loginMsg.User, nowTime, g.GlbServerCfg.ApiToken)
+		randid, err := util.RandId()
+		if err != nil {
+			return err
+		}
+		loginMsg.RunId = loginMsg.User + "-" + randid
+		ctlConn.Debug("%s client speed limit: %dKB/s (Inbound) / %dKB/s (Outbound)", loginMsg.User, inLimit, outLimit)
+	}
+
+
+	ctl := NewControl(ctx, svr.rc, svr.pxyManager, svr.pluginManager, svr.authVerifier, ctlConn, loginMsg, svr.cfg, inLimit, outLimit)
 	if oldCtl := svr.ctlManager.Add(loginMsg.RunID, ctl); oldCtl != nil {
 		oldCtl.allShutdown.WaitDone()
 	}
@@ -565,4 +609,12 @@ func (svr *Service) RegisterWorkConn(workConn net.Conn, newMsg *msg.NewWorkConn)
 func (svr *Service) RegisterVisitorConn(visitorConn net.Conn, newMsg *msg.NewVisitorConn) error {
 	return svr.rc.VisitorManager.NewConn(newMsg.ProxyName, visitorConn, newMsg.Timestamp, newMsg.SignKey,
 		newMsg.UseEncryption, newMsg.UseCompression)
+}
+func (svr *Service) CloseUser(user string) error {
+	ctl, ok := svr.ctlManager.SearchById(user)
+	if !ok {
+		return fmt.Errorf("user not login")
+	}
+	ctl.allShutdown.Start()
+	return nil
 }
