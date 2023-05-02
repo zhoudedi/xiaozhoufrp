@@ -20,6 +20,7 @@ import (
 	"runtime/debug"
 	"sync"
 	"time"
+	"strings"
 
 	"github.com/fatedier/frp/models/config"
 	"github.com/fatedier/frp/models/consts"
@@ -29,11 +30,15 @@ import (
 	"github.com/fatedier/frp/server/proxy"
 	"github.com/fatedier/frp/server/stats"
 	"github.com/fatedier/frp/utils/net"
+	frpNet "github.com/fatedier/frp/utils/net"
 	"github.com/fatedier/frp/utils/version"
 
 	"github.com/fatedier/golib/control/shutdown"
 	"github.com/fatedier/golib/crypto"
 	"github.com/fatedier/golib/errors"
+	
+	"github.com/fatedier/frp/extend/api"
+	"github.com/fatedier/frp/extend/limit"
 )
 
 type ControlManager struct {
@@ -74,6 +79,20 @@ func (cm *ControlManager) GetById(runId string) (ctl *Control, ok bool) {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 	ctl, ok = cm.ctlsByRunId[runId]
+	return
+}
+
+func (cm *ControlManager) SearchById(runId string) (ctl *Control, ok bool) {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	for k, v := range cm.ctlsByRunId {
+		if strings.IndexAny(k, runId+"-") > -1 {
+			if v == nil {
+				return
+			}
+			ctl, ok = cm.ctlsByRunId[k]
+		}
+	}
 	return
 }
 
@@ -126,6 +145,8 @@ type Control struct {
 	writerShutdown  *shutdown.Shutdown
 	managerShutdown *shutdown.Shutdown
 	allShutdown     *shutdown.Shutdown
+	inLimit  uint64
+	outLimit uint64
 
 	mu sync.RWMutex
 
@@ -135,7 +156,7 @@ type Control struct {
 
 func NewControl(rc *controller.ResourceController, pxyManager *proxy.ProxyManager,
 	statsCollector stats.Collector, ctlConn net.Conn, loginMsg *msg.Login,
-	serverCfg config.ServerCommonConf) *Control {
+	serverCfg config.ServerCommonConf, inLimit, outLimit uint64) *Control {
 
 	poolCount := loginMsg.PoolCount
 	if poolCount > int(serverCfg.MaxPoolCount) {
@@ -160,6 +181,8 @@ func NewControl(rc *controller.ResourceController, pxyManager *proxy.ProxyManage
 		writerShutdown:  shutdown.New(),
 		managerShutdown: shutdown.New(),
 		allShutdown:     shutdown.New(),
+		inLimit:         inLimit,  //rate.NewLimiter(rate.Limit(inLimit*limit.KB), int(inLimit*limit.KB)),
+		outLimit:        outLimit, //rate.NewLimiter(rate.Limit(outLimit*limit.KB), int(outLimit*limit.KB)),
 		serverCfg:       serverCfg,
 	}
 }
@@ -424,18 +447,51 @@ func (ctl *Control) manager() {
 
 func (ctl *Control) RegisterProxy(pxyMsg *msg.NewProxy) (remoteAddr string, err error) {
 	var pxyConf config.ProxyConf
+	s, err := api.NewService(g.GlbServerCfg.ApiBaseUrl)
+	var workConn proxy.GetWorkConnFn = ctl.GetWorkConn
+
+	if err != nil {
+		return remoteAddr, err
+	}
 	// Load configures from NewProxy message and check.
 	pxyConf, err = config.NewProxyConfFromMsg(pxyMsg, ctl.serverCfg)
 	if err != nil {
-		return
+		return remoteAddr, err
+	}
+
+	if g.GlbServerCfg.EnableApi {
+
+		nowTime := time.Now().Unix()
+		ok, err := s.CheckProxy(ctl.loginMsg.User, pxyMsg, nowTime, g.GlbServerCfg.ApiToken)
+
+		if err != nil {
+			return remoteAddr, err
+		}
+
+		if !ok {
+			return remoteAddr, fmt.Errorf("invalid proxy configuration")
+		}
+
+		workConn = func() (frpNet.Conn, error) {
+			fconn, err := ctl.GetWorkConn()
+			if err != nil {
+				return nil, err
+			}
+			return limit.NewLimitConn(ctl.inLimit, ctl.outLimit, fconn), nil
+		}
 	}
 
 	// NewProxy will return a interface Proxy.
 	// In fact it create different proxies by different proxy type, we just call run() here.
-	pxy, err := proxy.NewProxy(ctl.runId, ctl.rc, ctl.statsCollector, ctl.poolCount, ctl.GetWorkConn, pxyConf, ctl.serverCfg)
+	pxy, err := proxy.NewProxy(ctl.runId, ctl.rc, ctl.statsCollector, ctl.poolCount, workConn, pxyConf, ctl.serverCfg)
 	if err != nil {
 		return remoteAddr, err
 	}
+	err = ctl.pxyManager.Add(pxyMsg.ProxyName, pxy)
+	if err != nil {
+		return
+	}
+
 
 	// Check ports used number in each client
 	if ctl.serverCfg.MaxPortsPerClient > 0 {
@@ -467,11 +523,7 @@ func (ctl *Control) RegisterProxy(pxyMsg *msg.NewProxy) (remoteAddr string, err 
 		}
 	}()
 
-	err = ctl.pxyManager.Add(pxyMsg.ProxyName, pxy)
-	if err != nil {
-		return
-	}
-
+	
 	ctl.mu.Lock()
 	ctl.proxies[pxy.GetName()] = pxy
 	ctl.mu.Unlock()
