@@ -21,7 +21,9 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"time"
 
+	"github.com/fatedier/frp/extend/cumu"
 	"github.com/fatedier/frp/models/config"
 	"github.com/fatedier/frp/models/msg"
 	"github.com/fatedier/frp/server/controller"
@@ -238,16 +240,29 @@ func HandleUserTcpConnection(pxy Proxy, userConn net.Conn, statsCollector stats.
 		workConn.RemoteAddr().String(), userConn.LocalAddr().String(), userConn.RemoteAddr().String())
 
 	statsCollector.Mark(stats.TypeOpenConnection, &stats.OpenConnectionPayload{ProxyName: pxy.GetName()})
-	inCount, outCount := frpIo.Join(local, userConn)
+	cc := cumu.NewCumuConn(userConn)
+	endSig := make(chan int)
+	go func(cc *cumu.Conn, ch chan int) {
+		for {
+			select {
+			case <-ch:
+				return
+			default:
+				time.Sleep(1 * time.Second)
+				statsCollector.Mark(stats.TypeAddTrafficIn, &stats.AddTrafficInPayload{
+					ProxyName:    pxy.GetName(),
+					TrafficBytes: cc.OutCount(),
+				})
+				statsCollector.Mark(stats.TypeAddTrafficOut, &stats.AddTrafficOutPayload{
+					ProxyName:    pxy.GetName(),
+					TrafficBytes: cc.InCount(),
+				})
+			}
+		}
+	}(cc, endSig)
+	frpIo.Join(local, cc)
 	statsCollector.Mark(stats.TypeCloseConnection, &stats.CloseConnectionPayload{ProxyName: pxy.GetName()})
-	statsCollector.Mark(stats.TypeAddTrafficIn, &stats.AddTrafficInPayload{
-		ProxyName:    pxy.GetName(),
-		TrafficBytes: inCount,
-	})
-	statsCollector.Mark(stats.TypeAddTrafficOut, &stats.AddTrafficOutPayload{
-		ProxyName:    pxy.GetName(),
-		TrafficBytes: outCount,
-	})
+	endSig <- 1
 	xl.Debug("join connections closed")
 }
 
@@ -267,9 +282,7 @@ func NewProxyManager() *ProxyManager {
 func (pm *ProxyManager) Add(name string, pxy Proxy) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
-	if _, ok := pm.pxys[name]; ok {
-		return fmt.Errorf("proxy name [%s] is already in use", name)
-	}
+	
 
 	pm.pxys[name] = pxy
 	return nil
