@@ -26,6 +26,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"regexp"
 	"time"
 
 	"github.com/fatedier/frp/assets"
@@ -45,6 +46,7 @@ import (
 
 	"github.com/fatedier/golib/net/mux"
 	fmux "github.com/hashicorp/yamux"
+	"github.com/fatedier/frp/extend/api"
 )
 
 const (
@@ -109,7 +111,7 @@ func NewService(cfg config.ServerCommonConf) (svr *Service, err error) {
 	svr.rc.HTTPGroupCtl = group.NewHTTPGroupController(svr.httpVhostRouter)
 
 	// Init 404 not found page
-	vhost.NotFoundPagePath = cfg.Custom404Page
+	vhost.ServiceUnavailablePagePath = cfg.Custom503Page
 
 	var (
 		httpMuxOn  bool
@@ -367,17 +369,57 @@ func (svr *Service) RegisterControl(ctlConn frpNet.Conn, loginMsg *msg.Login) (e
 		err = fmt.Errorf("authorization failed")
 		return
 	}
+	
+	var (
+		inLimit  uint64
+		outLimit uint64
+	)
+
+	if g.GlbServerCfg.EnableApi {
+
+		nowTime := time.Now().Unix()
+
+		s, err := api.NewService(g.GlbServerCfg.ApiBaseUrl)
+		if err != nil {
+			return err
+		}
+
+		r := regexp.MustCompile(`^[A-Za-z0-9]{1,32}$`)
+		mm := r.FindAllStringSubmatch(loginMsg.User, -1)
+
+		if len(mm) < 1 {
+			return fmt.Errorf("invalid username")
+		}
+
+		// Connect to API server and verify the user.
+		valid, err := s.CheckToken(loginMsg.User, loginMsg.PrivilegeKey, nowTime, g.GlbServerCfg.ApiToken)
+
+		if err != nil {
+			return err
+		}
+
+		if !valid {
+			return fmt.Errorf("authorization failed")
+		}
+
+		inLimit, outLimit, err = s.GetProxyLimit(loginMsg.User, nowTime, g.GlbServerCfg.ApiToken)
+		if err != nil {
+			return err
+		}
+		ctlConn.Debug("%s client speed limit: %dKB/s (Inbound) / %dKB/s (Outbound)", loginMsg.User, inLimit, outLimit)
+	}
 
 	// If client's RunId is empty, it's a new client, we just create a new controller.
 	// Otherwise, we check if there is one controller has the same run id. If so, we release previous controller and start new one.
 	if loginMsg.RunId == "" {
-		loginMsg.RunId, err = util.RandId()
+		randid, err := util.RandId()
 		if err != nil {
-			return
+			return err
 		}
+		loginMsg.RunId = loginMsg.User + "-" + randid
 	}
 
-	ctl := NewControl(svr.rc, svr.pxyManager, svr.statsCollector, ctlConn, loginMsg, svr.cfg)
+	ctl := NewControl(svr.rc, svr.pxyManager, svr.statsCollector, ctlConn, loginMsg, svr.cfg, inLimit, outLimit)
 
 	if oldCtl := svr.ctlManager.Add(loginMsg.RunId, ctl); oldCtl != nil {
 		oldCtl.allShutdown.WaitDone()
@@ -432,4 +474,12 @@ func generateTLSConfig() *tls.Config {
 		panic(err)
 	}
 	return &tls.Config{Certificates: []tls.Certificate{tlsCert}}
+}
+func (svr *Service) CloseUser(user string) error {
+	ctl, ok := svr.ctlManager.SearchById(user)
+	if !ok {
+		return fmt.Errorf("user not login")
+	}
+	ctl.allShutdown.Start()
+	return nil
 }
