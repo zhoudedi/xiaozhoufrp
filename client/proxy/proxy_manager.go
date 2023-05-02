@@ -20,24 +20,17 @@ type ProxyManager struct {
 	closed bool
 	mu     sync.RWMutex
 
-	clientCfg config.ClientCommonConf
-
-	// The UDP port that the server is listening on
-	serverUDPPort int
-
 	logPrefix string
 	log.Logger
 }
 
-func NewProxyManager(msgSendCh chan (msg.Message), logPrefix string, clientCfg config.ClientCommonConf, serverUDPPort int) *ProxyManager {
+func NewProxyManager(msgSendCh chan (msg.Message), logPrefix string) *ProxyManager {
 	return &ProxyManager{
-		proxies:       make(map[string]*ProxyWrapper),
-		sendCh:        msgSendCh,
-		closed:        false,
-		clientCfg:     clientCfg,
-		serverUDPPort: serverUDPPort,
-		logPrefix:     logPrefix,
-		Logger:        log.NewPrefixLogger(logPrefix),
+		proxies:   make(map[string]*ProxyWrapper),
+		sendCh:    msgSendCh,
+		closed:    false,
+		logPrefix: logPrefix,
+		Logger:    log.NewPrefixLogger(logPrefix),
 	}
 }
 
@@ -133,7 +126,7 @@ func (pm *ProxyManager) Reload(pxyCfgs map[string]config.ProxyConf) {
 	addPxyNames := make([]string, 0)
 	for name, cfg := range pxyCfgs {
 		if _, ok := pm.proxies[name]; !ok {
-			pxy := NewProxyWrapper(cfg, pm.clientCfg, pm.HandleEvent, pm.logPrefix, pm.serverUDPPort)
+			pxy := NewProxyWrapper(cfg, pm.HandleEvent, pm.logPrefix)
 			pm.proxies[name] = pxy
 			addPxyNames = append(addPxyNames, name)
 

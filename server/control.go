@@ -22,6 +22,7 @@ import (
 	"time"
 	"strings"
 
+	"github.com/fatedier/frp/g"
 	"github.com/fatedier/frp/models/config"
 	"github.com/fatedier/frp/models/consts"
 	frpErr "github.com/fatedier/frp/models/errors"
@@ -36,7 +37,7 @@ import (
 	"github.com/fatedier/golib/control/shutdown"
 	"github.com/fatedier/golib/crypto"
 	"github.com/fatedier/golib/errors"
-	
+
 	"github.com/fatedier/frp/extend/api"
 	"github.com/fatedier/frp/extend/limit"
 )
@@ -145,23 +146,16 @@ type Control struct {
 	writerShutdown  *shutdown.Shutdown
 	managerShutdown *shutdown.Shutdown
 	allShutdown     *shutdown.Shutdown
+
 	inLimit  uint64
 	outLimit uint64
 
 	mu sync.RWMutex
-
-	// Server configuration information
-	serverCfg config.ServerCommonConf
 }
 
 func NewControl(rc *controller.ResourceController, pxyManager *proxy.ProxyManager,
-	statsCollector stats.Collector, ctlConn net.Conn, loginMsg *msg.Login,
-	serverCfg config.ServerCommonConf, inLimit, outLimit uint64) *Control {
+	statsCollector stats.Collector, ctlConn net.Conn, loginMsg *msg.Login, inLimit, outLimit uint64) *Control {
 
-	poolCount := loginMsg.PoolCount
-	if poolCount > int(serverCfg.MaxPoolCount) {
-		poolCount = int(serverCfg.MaxPoolCount)
-	}
 	return &Control{
 		rc:              rc,
 		pxyManager:      pxyManager,
@@ -170,9 +164,9 @@ func NewControl(rc *controller.ResourceController, pxyManager *proxy.ProxyManage
 		loginMsg:        loginMsg,
 		sendCh:          make(chan msg.Message, 10),
 		readCh:          make(chan msg.Message, 10),
-		workConnCh:      make(chan net.Conn, poolCount+10),
+		workConnCh:      make(chan net.Conn, loginMsg.PoolCount+10),
 		proxies:         make(map[string]proxy.Proxy),
-		poolCount:       poolCount,
+		poolCount:       loginMsg.PoolCount,
 		portsUsedNum:    0,
 		lastPing:        time.Now(),
 		runId:           loginMsg.RunId,
@@ -183,7 +177,6 @@ func NewControl(rc *controller.ResourceController, pxyManager *proxy.ProxyManage
 		allShutdown:     shutdown.New(),
 		inLimit:         inLimit,  //rate.NewLimiter(rate.Limit(inLimit*limit.KB), int(inLimit*limit.KB)),
 		outLimit:        outLimit, //rate.NewLimiter(rate.Limit(outLimit*limit.KB), int(outLimit*limit.KB)),
-		serverCfg:       serverCfg,
 	}
 }
 
@@ -192,7 +185,7 @@ func (ctl *Control) Start() {
 	loginRespMsg := &msg.LoginResp{
 		Version:       version.Full(),
 		RunId:         ctl.runId,
-		ServerUdpPort: ctl.serverCfg.BindUdpPort,
+		ServerUdpPort: g.GlbServerCfg.BindUdpPort,
 		Error:         "",
 	}
 	msg.WriteMsg(ctl.conn, loginRespMsg)
@@ -263,7 +256,7 @@ func (ctl *Control) GetWorkConn() (workConn net.Conn, err error) {
 				return
 			}
 
-		case <-time.After(time.Duration(ctl.serverCfg.UserConnTimeout) * time.Second):
+		case <-time.After(time.Duration(g.GlbServerCfg.UserConnTimeout) * time.Second):
 			err = fmt.Errorf("timeout trying to get work connection")
 			ctl.conn.Warn("%v", err)
 			return
@@ -294,7 +287,7 @@ func (ctl *Control) writer() {
 	defer ctl.allShutdown.Start()
 	defer ctl.writerShutdown.Done()
 
-	encWriter, err := crypto.NewWriter(ctl.conn, []byte(ctl.serverCfg.Token))
+	encWriter, err := crypto.NewWriter(ctl.conn, []byte(g.GlbServerCfg.Token))
 	if err != nil {
 		ctl.conn.Error("crypto new writer error: %v", err)
 		ctl.allShutdown.Start()
@@ -324,7 +317,7 @@ func (ctl *Control) reader() {
 	defer ctl.allShutdown.Start()
 	defer ctl.readerShutdown.Done()
 
-	encReader := crypto.NewReader(ctl.conn, []byte(ctl.serverCfg.Token))
+	encReader := crypto.NewReader(ctl.conn, []byte(g.GlbServerCfg.Token))
 	for {
 		if m, err := msg.ReadMsg(encReader); err != nil {
 			if err == io.EOF {
@@ -405,7 +398,7 @@ func (ctl *Control) manager() {
 	for {
 		select {
 		case <-heartbeat.C:
-			if time.Since(ctl.lastPing) > time.Duration(ctl.serverCfg.HeartBeatTimeout)*time.Second {
+			if time.Since(ctl.lastPing) > time.Duration(g.GlbServerCfg.HeartBeatTimeout)*time.Second {
 				ctl.conn.Warn("heartbeat timeout")
 				return
 			}
@@ -447,14 +440,16 @@ func (ctl *Control) manager() {
 
 func (ctl *Control) RegisterProxy(pxyMsg *msg.NewProxy) (remoteAddr string, err error) {
 	var pxyConf config.ProxyConf
+
 	s, err := api.NewService(g.GlbServerCfg.ApiBaseUrl)
 	var workConn proxy.GetWorkConnFn = ctl.GetWorkConn
 
 	if err != nil {
 		return remoteAddr, err
 	}
+
 	// Load configures from NewProxy message and check.
-	pxyConf, err = config.NewProxyConfFromMsg(pxyMsg, ctl.serverCfg)
+	pxyConf, err = config.NewProxyConfFromMsg(pxyMsg)
 	if err != nil {
 		return remoteAddr, err
 	}
@@ -483,20 +478,20 @@ func (ctl *Control) RegisterProxy(pxyMsg *msg.NewProxy) (remoteAddr string, err 
 
 	// NewProxy will return a interface Proxy.
 	// In fact it create different proxies by different proxy type, we just call run() here.
-	pxy, err := proxy.NewProxy(ctl.runId, ctl.rc, ctl.statsCollector, ctl.poolCount, workConn, pxyConf, ctl.serverCfg)
+	pxy, err := proxy.NewProxy(ctl.runId, ctl.rc, ctl.statsCollector, ctl.poolCount, workConn, pxyConf)
 	if err != nil {
 		return remoteAddr, err
 	}
+
 	err = ctl.pxyManager.Add(pxyMsg.ProxyName, pxy)
 	if err != nil {
 		return
 	}
 
-
 	// Check ports used number in each client
-	if ctl.serverCfg.MaxPortsPerClient > 0 {
+	if g.GlbServerCfg.MaxPortsPerClient > 0 {
 		ctl.mu.Lock()
-		if ctl.portsUsedNum+pxy.GetUsedPortsNum() > int(ctl.serverCfg.MaxPortsPerClient) {
+		if ctl.portsUsedNum+pxy.GetUsedPortsNum() > int(g.GlbServerCfg.MaxPortsPerClient) {
 			ctl.mu.Unlock()
 			err = fmt.Errorf("exceed the max_ports_per_client")
 			return
@@ -523,7 +518,6 @@ func (ctl *Control) RegisterProxy(pxyMsg *msg.NewProxy) (remoteAddr string, err 
 		}
 	}()
 
-	
 	ctl.mu.Lock()
 	ctl.proxies[pxy.GetName()] = pxy
 	ctl.mu.Unlock()
@@ -538,7 +532,7 @@ func (ctl *Control) CloseProxy(closeMsg *msg.CloseProxy) (err error) {
 		return
 	}
 
-	if ctl.serverCfg.MaxPortsPerClient > 0 {
+	if g.GlbServerCfg.MaxPortsPerClient > 0 {
 		ctl.portsUsedNum = ctl.portsUsedNum - pxy.GetUsedPortsNum()
 	}
 	pxy.Close()

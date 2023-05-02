@@ -30,7 +30,7 @@ var (
 const (
 	ServiceUnavailable = `<!DOCTYPE html>
 <html>
-<head>
+	<head>
 		<title>503 Service Unavailable</title>
 		<style>
 			body {

@@ -24,126 +24,67 @@ import (
 	"github.com/fatedier/frp/utils/util"
 )
 
-// ServerCommonConf contains information for a server service. It is
-// recommended to use GetDefaultServerConf instead of creating this object
-// directly, so that all unspecified fields have reasonable default values.
+var (
+	// server global configure used for generate proxy conf used in frps
+	proxyBindAddr  string
+	subDomainHost  string
+	vhostHttpPort  int
+	vhostHttpsPort int
+)
+
+func InitServerCfg(cfg *ServerCommonConf) {
+	proxyBindAddr = cfg.ProxyBindAddr
+	subDomainHost = cfg.SubDomainHost
+	vhostHttpPort = cfg.VhostHttpPort
+	vhostHttpsPort = cfg.VhostHttpsPort
+}
+
+// common config
 type ServerCommonConf struct {
-	// BindAddr specifies the address that the server binds to. By default,
-	// this value is "0.0.0.0".
-	BindAddr string `json:"bind_addr"`
-	// BindPort specifies the port that the server listens on. By default, this
-	// value is 7000.
-	BindPort int `json:"bind_port"`
-	// BindUdpPort specifies the UDP port that the server listens on. If this
-	// value is 0, the server will not listen for UDP connections. By default,
-	// this value is 0
-	BindUdpPort int `json:"bind_udp_port"`
-	// BindKcpPort specifies the KCP port that the server listens on. If this
-	// value is 0, the server will not listen for KCP connections. By default,
-	// this value is 0.
-	KcpBindPort int `json:"kcp_bind_port"`
-	// ProxyBindAddr specifies the address that the proxy binds to. This value
-	// may be the same as BindAddr. By default, this value is "0.0.0.0".
+	BindAddr      string `json:"bind_addr"`
+	BindPort      int    `json:"bind_port"`
+	BindUdpPort   int    `json:"bind_udp_port"`
+	KcpBindPort   int    `json:"kcp_bind_port"`
 	ProxyBindAddr string `json:"proxy_bind_addr"`
 
-	// VhostHttpPort specifies the port that the server listens for HTTP Vhost
-	// requests. If this value is 0, the server will not listen for HTTP
-	// requests. By default, this value is 0.
+	// If VhostHttpPort equals 0, don't listen a public port for http protocol.
 	VhostHttpPort int `json:"vhost_http_port"`
 
-	// VhostHttpsPort specifies the port that the server listens for HTTPS
-	// Vhost requests. If this value is 0, the server will not listen for HTTPS
-	// requests. By default, this value is 0.
+	// if VhostHttpsPort equals 0, don't listen a public port for https protocol
 	VhostHttpsPort int `json:"vhost_https_port"`
 
-	// VhostHttpTimeout specifies the response header timeout for the Vhost
-	// HTTP server, in seconds. By default, this value is 60.
 	VhostHttpTimeout int64 `json:"vhost_http_timeout"`
 
-	// DashboardAddr specifies the address that the dashboard binds to. By
-	// default, this value is "0.0.0.0".
 	DashboardAddr string `json:"dashboard_addr"`
 
-	// DashboardPort specifies the port that the dashboard listens on. If this
-	// value is 0, the dashboard will not be started. By default, this value is
-	// 0.
-	DashboardPort int `json:"dashboard_port"`
-	// DashboardUser specifies the username that the dashboard will use for
-	// login. By default, this value is "admin".
+	// if DashboardPort equals 0, dashboard is not available
+	DashboardPort int    `json:"dashboard_port"`
 	DashboardUser string `json:"dashboard_user"`
-	// DashboardUser specifies the password that the dashboard will use for
-	// login. By default, this value is "admin".
-	DashboardPwd string `json:"dashboard_pwd"`
-	// AssetsDir specifies the local directory that the dashboard will load
-	// resources from. If this value is "", assets will be loaded from the
-	// bundled executable using statik. By default, this value is "".
-	AssetsDir string `json:"asserts_dir"`
-	// LogFile specifies a file where logs will be written to. This value will
-	// only be used if LogWay is set appropriately. By default, this value is
-	// "console".
-	LogFile string `json:"log_file"`
-	// LogWay specifies the way logging is managed. Valid values are "console"
-	// or "file". If "console" is used, logs will be printed to stdout. If
-	// "file" is used, logs will be printed to LogFile. By default, this value
-	// is "console".
-	LogWay string `json:"log_way"`
-	// LogLevel specifies the minimum log level. Valid values are "trace",
-	// "debug", "info", "warn", and "error". By default, this value is "info".
-	LogLevel string `json:"log_level"`
-	// LogMaxDays specifies the maximum number of days to store log information
-	// before deletion. This is only used if LogWay == "file". By default, this
-	// value is 0.
-	LogMaxDays int64 `json:"log_max_days"`
-	// DisableLogColor disables log colors when LogWay == "console" when set to
-	// true. By default, this value is false.
-	DisableLogColor bool `json:"disable_log_color"`
-	// Token specifies the authorization token used to authenticate keys
-	// received from clients. Clients must have a matching token to be
-	// authorized to use the server. By default, this value is "".
-	Token string `json:"token"`
-	// SubDomainHost specifies the domain that will be attached to sub-domains
-	// requested by the client when using Vhost proxying. For example, if this
-	// value is set to "frps.com" and the client requested the subdomain
-	// "test", the resulting URL would be "test.frps.com". By default, this
-	// value is "".
+	DashboardPwd  string `json:"dashboard_pwd"`
+	AssetsDir     string `json:"asserts_dir"`
+	LogFile       string `json:"log_file"`
+	LogWay        string `json:"log_way"` // console or file
+	LogLevel      string `json:"log_level"`
+	LogMaxDays    int64  `json:"log_max_days"`
+	Token         string `json:"token"`
 	SubDomainHost string `json:"subdomain_host"`
-	// TcpMux toggles TCP stream multiplexing. This allows multiple requests
-	// from a client to share a single TCP connection. By default, this value
-	// is true.
-	TcpMux bool `json:"tcp_mux"`
-	// Custom404Page specifies a path to a custom 404 page to display. If this
-	// value is "", a default page will be displayed. By default, this value is
-	// "".
+	TcpMux        bool   `json:"tcp_mux"`
 	Custom503Page string `json:"custom_503_page"`
 
-	// AllowPorts specifies a set of ports that clients are able to proxy to.
-	// If the length of this value is 0, all ports are allowed. By default,
-	// this value is an empty set.
-	AllowPorts map[int]struct{}
-	// MaxPoolCount specifies the maximum pool size for each proxy. By default,
-	// this value is 5.
-	MaxPoolCount int64 `json:"max_pool_count"`
-	// MaxPortsPerClient specifies the maximum number of ports a single client
-	// may proxy to. If this value is 0, no limit will be applied. By default,
-	// this value is 0.
+	AllowPorts        map[int]struct{}
+	MaxPoolCount      int64 `json:"max_pool_count"`
 	MaxPortsPerClient int64 `json:"max_ports_per_client"`
-	// HeartBeatTimeout specifies the maximum time to wait for a heartbeat
-	// before terminating the connection. It is not recommended to change this
-	// value. By default, this value is 90.
-	HeartBeatTimeout int64 `json:"heart_beat_timeout"`
-	// UserConnTimeout specifies the maximum time to wait for a work
-	// connection. By default, this value is 10.
-	UserConnTimeout int64 `json:"user_conn_timeout"`
+	HeartBeatTimeout  int64 `json:"heart_beat_timeout"`
+	UserConnTimeout   int64 `json:"user_conn_timeout"`
+
 	// API
 	EnableApi  bool   `json:"api_enable"`
 	ApiBaseUrl string `json:"api_baseurl"`
 	ApiToken   string `json:"api_token"`
 }
 
-// GetDefaultServerConf returns a server configuration with reasonable
-// defaults.
-func GetDefaultServerConf() ServerCommonConf {
-	return ServerCommonConf{
+func GetDefaultServerConf() *ServerCommonConf {
+	return &ServerCommonConf{
 		BindAddr:          "0.0.0.0",
 		BindPort:          7000,
 		BindUdpPort:       0,
@@ -161,7 +102,6 @@ func GetDefaultServerConf() ServerCommonConf {
 		LogWay:            "console",
 		LogLevel:          "info",
 		LogMaxDays:        3,
-		DisableLogColor:   false,
 		Token:             "",
 		SubDomainHost:     "",
 		TcpMux:            true,
@@ -177,15 +117,16 @@ func GetDefaultServerConf() ServerCommonConf {
 	}
 }
 
-// UnmarshalServerConfFromIni parses the contents of a server configuration ini
-// file and returns the resulting server configuration.
-func UnmarshalServerConfFromIni(content string) (cfg ServerCommonConf, err error) {
-	cfg = GetDefaultServerConf()
+func UnmarshalServerConfFromIni(defaultCfg *ServerCommonConf, content string) (cfg *ServerCommonConf, err error) {
+	cfg = defaultCfg
+	if cfg == nil {
+		cfg = GetDefaultServerConf()
+	}
 
 	conf, err := ini.Load(strings.NewReader(content))
 	if err != nil {
 		err = fmt.Errorf("parse ini conf file error: %v", err)
-		return ServerCommonConf{}, err
+		return nil, err
 	}
 
 	var (
@@ -311,10 +252,6 @@ func UnmarshalServerConfFromIni(content string) (cfg ServerCommonConf, err error
 		}
 	}
 
-	if tmpStr, ok = conf.Get("common", "disable_log_color"); ok && tmpStr == "true" {
-		cfg.DisableLogColor = true
-	}
-
 	cfg.Token, _ = conf.Get("common", "token")
 
 	if allowPortsStr, ok := conf.Get("common", "allow_ports"); ok {
@@ -379,6 +316,7 @@ func UnmarshalServerConfFromIni(content string) (cfg ServerCommonConf, err error
 			cfg.HeartBeatTimeout = v
 		}
 	}
+
 	if tmpStr, ok = conf.Get("common", "api_enable"); ok && tmpStr == "false" {
 		cfg.EnableApi = false
 	} else {

@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/fatedier/frp/client/proxy"
+	"github.com/fatedier/frp/g"
 	"github.com/fatedier/frp/models/config"
 	"github.com/fatedier/frp/utils/log"
 )
@@ -46,7 +47,7 @@ func (svr *Service) apiReload(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	content, err := config.GetRenderedConfFromFile(svr.cfgFile)
+	content, err := config.GetRenderedConfFromFile(g.GlbClientCfg.CfgFile)
 	if err != nil {
 		res.Code = 400
 		res.Msg = err.Error()
@@ -54,7 +55,7 @@ func (svr *Service) apiReload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newCommonCfg, err := config.UnmarshalClientConfFromIni(content)
+	newCommonCfg, err := config.UnmarshalClientConfFromIni(nil, content)
 	if err != nil {
 		res.Code = 400
 		res.Msg = err.Error()
@@ -62,7 +63,7 @@ func (svr *Service) apiReload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pxyCfgs, visitorCfgs, err := config.LoadAllConfFromIni(svr.cfg.User, content, newCommonCfg.Start)
+	pxyCfgs, visitorCfgs, err := config.LoadAllConfFromIni(g.GlbClientCfg.User, content, newCommonCfg.Start)
 	if err != nil {
 		res.Code = 400
 		res.Msg = err.Error()
@@ -106,7 +107,7 @@ func (a ByProxyStatusResp) Len() int           { return len(a) }
 func (a ByProxyStatusResp) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a ByProxyStatusResp) Less(i, j int) bool { return strings.Compare(a[i].Name, a[j].Name) < 0 }
 
-func NewProxyStatusResp(status *proxy.ProxyStatus, serverAddr string) ProxyStatusResp {
+func NewProxyStatusResp(status *proxy.ProxyStatus) ProxyStatusResp {
 	psr := ProxyStatusResp{
 		Name:   status.Name,
 		Type:   status.Type,
@@ -120,18 +121,18 @@ func NewProxyStatusResp(status *proxy.ProxyStatus, serverAddr string) ProxyStatu
 		}
 		psr.Plugin = cfg.Plugin
 		if status.Err != "" {
-			psr.RemoteAddr = fmt.Sprintf("%s:%d", serverAddr, cfg.RemotePort)
+			psr.RemoteAddr = fmt.Sprintf("%s:%d", g.GlbClientCfg.ServerAddr, cfg.RemotePort)
 		} else {
-			psr.RemoteAddr = serverAddr + status.RemoteAddr
+			psr.RemoteAddr = g.GlbClientCfg.ServerAddr + status.RemoteAddr
 		}
 	case *config.UdpProxyConf:
 		if cfg.LocalPort != 0 {
 			psr.LocalAddr = fmt.Sprintf("%s:%d", cfg.LocalIp, cfg.LocalPort)
 		}
 		if status.Err != "" {
-			psr.RemoteAddr = fmt.Sprintf("%s:%d", serverAddr, cfg.RemotePort)
+			psr.RemoteAddr = fmt.Sprintf("%s:%d", g.GlbClientCfg.ServerAddr, cfg.RemotePort)
 		} else {
-			psr.RemoteAddr = serverAddr + status.RemoteAddr
+			psr.RemoteAddr = g.GlbClientCfg.ServerAddr + status.RemoteAddr
 		}
 	case *config.HttpProxyConf:
 		if cfg.LocalPort != 0 {
@@ -183,17 +184,17 @@ func (svr *Service) apiStatus(w http.ResponseWriter, r *http.Request) {
 	for _, status := range ps {
 		switch status.Type {
 		case "tcp":
-			res.Tcp = append(res.Tcp, NewProxyStatusResp(status, svr.cfg.ServerAddr))
+			res.Tcp = append(res.Tcp, NewProxyStatusResp(status))
 		case "udp":
-			res.Udp = append(res.Udp, NewProxyStatusResp(status, svr.cfg.ServerAddr))
+			res.Udp = append(res.Udp, NewProxyStatusResp(status))
 		case "http":
-			res.Http = append(res.Http, NewProxyStatusResp(status, svr.cfg.ServerAddr))
+			res.Http = append(res.Http, NewProxyStatusResp(status))
 		case "https":
-			res.Https = append(res.Https, NewProxyStatusResp(status, svr.cfg.ServerAddr))
+			res.Https = append(res.Https, NewProxyStatusResp(status))
 		case "stcp":
-			res.Stcp = append(res.Stcp, NewProxyStatusResp(status, svr.cfg.ServerAddr))
+			res.Stcp = append(res.Stcp, NewProxyStatusResp(status))
 		case "xtcp":
-			res.Xtcp = append(res.Xtcp, NewProxyStatusResp(status, svr.cfg.ServerAddr))
+			res.Xtcp = append(res.Xtcp, NewProxyStatusResp(status))
 		}
 	}
 	sort.Sort(ByProxyStatusResp(res.Tcp))
@@ -218,14 +219,14 @@ func (svr *Service) apiGetConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	if svr.cfgFile == "" {
+	if g.GlbClientCfg.CfgFile == "" {
 		res.Code = 400
 		res.Msg = "frpc has no config file path"
 		log.Warn("%s", res.Msg)
 		return
 	}
 
-	content, err := config.GetRenderedConfFromFile(svr.cfgFile)
+	content, err := config.GetRenderedConfFromFile(g.GlbClientCfg.CfgFile)
 	if err != nil {
 		res.Code = 400
 		res.Msg = err.Error()
@@ -276,7 +277,7 @@ func (svr *Service) apiPutConfig(w http.ResponseWriter, r *http.Request) {
 
 	// get token from origin content
 	token := ""
-	b, err := ioutil.ReadFile(svr.cfgFile)
+	b, err := ioutil.ReadFile(g.GlbClientCfg.CfgFile)
 	if err != nil {
 		res.Code = 400
 		res.Msg = err.Error()
@@ -315,7 +316,7 @@ func (svr *Service) apiPutConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	content = strings.Join(newRows, "\n")
 
-	err = ioutil.WriteFile(svr.cfgFile, []byte(content), 0644)
+	err = ioutil.WriteFile(g.GlbClientCfg.CfgFile, []byte(content), 0644)
 	if err != nil {
 		res.Code = 500
 		res.Msg = fmt.Sprintf("write content to frpc config file error: %v", err)

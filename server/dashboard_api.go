@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/fatedier/frp/g"
 	"github.com/fatedier/frp/models/config"
 	"github.com/fatedier/frp/models/consts"
 	"github.com/fatedier/frp/utils/log"
@@ -62,18 +63,19 @@ func (svr *Service) ApiServerInfo(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	log.Info("Http request: [%s]", r.URL.Path)
+	cfg := &g.GlbServerCfg.ServerCommonConf
 	serverStats := svr.statsCollector.GetServer()
 	svrResp := ServerInfoResp{
 		Version:           version.Full(),
-		BindPort:          svr.cfg.BindPort,
-		BindUdpPort:       svr.cfg.BindUdpPort,
-		VhostHttpPort:     svr.cfg.VhostHttpPort,
-		VhostHttpsPort:    svr.cfg.VhostHttpsPort,
-		KcpBindPort:       svr.cfg.KcpBindPort,
-		SubdomainHost:     svr.cfg.SubDomainHost,
-		MaxPoolCount:      svr.cfg.MaxPoolCount,
-		MaxPortsPerClient: svr.cfg.MaxPortsPerClient,
-		HeartBeatTimeout:  svr.cfg.HeartBeatTimeout,
+		BindPort:          cfg.BindPort,
+		BindUdpPort:       cfg.BindUdpPort,
+		VhostHttpPort:     cfg.VhostHttpPort,
+		VhostHttpsPort:    cfg.VhostHttpsPort,
+		KcpBindPort:       cfg.KcpBindPort,
+		SubdomainHost:     cfg.SubDomainHost,
+		MaxPoolCount:      cfg.MaxPoolCount,
+		MaxPortsPerClient: cfg.MaxPortsPerClient,
+		HeartBeatTimeout:  cfg.HeartBeatTimeout,
 
 		TotalTrafficIn:  serverStats.TotalTrafficIn,
 		TotalTrafficOut: serverStats.TotalTrafficOut,
@@ -320,6 +322,7 @@ func (svr *Service) ApiProxyTraffic(w http.ResponseWriter, r *http.Request) {
 	buf, _ := json.Marshal(&trafficResp)
 	res.Msg = string(buf)
 }
+
 type CloseUserResp struct {
 	Status int    `json:"status"`
 	Msg    string `json:"message"`

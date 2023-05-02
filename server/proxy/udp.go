@@ -20,6 +20,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/fatedier/frp/g"
 	"github.com/fatedier/frp/models/config"
 	"github.com/fatedier/frp/models/msg"
 	"github.com/fatedier/frp/models/proto/udp"
@@ -66,7 +67,7 @@ func (pxy *UdpProxy) Run() (remoteAddr string, err error) {
 
 	remoteAddr = fmt.Sprintf(":%d", pxy.realPort)
 	pxy.cfg.RemotePort = pxy.realPort
-	addr, errRet := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", pxy.serverCfg.ProxyBindAddr, pxy.realPort))
+	addr, errRet := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", g.GlbServerCfg.ProxyBindAddr, pxy.realPort))
 	if errRet != nil {
 		err = errRet
 		return

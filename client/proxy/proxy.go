@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fatedier/frp/g"
 	"github.com/fatedier/frp/models/config"
 	"github.com/fatedier/frp/models/msg"
 	"github.com/fatedier/frp/models/plugin"
@@ -50,11 +51,9 @@ type Proxy interface {
 	log.Logger
 }
 
-func NewProxy(pxyConf config.ProxyConf, clientCfg config.ClientCommonConf, serverUDPPort int) (pxy Proxy) {
+func NewProxy(pxyConf config.ProxyConf) (pxy Proxy) {
 	baseProxy := BaseProxy{
-		Logger:        log.NewPrefixLogger(pxyConf.GetBaseInfo().ProxyName),
-		clientCfg:     clientCfg,
-		serverUDPPort: serverUDPPort,
+		Logger: log.NewPrefixLogger(pxyConf.GetBaseInfo().ProxyName),
 	}
 	switch cfg := pxyConf.(type) {
 	case *config.TcpProxyConf:
@@ -92,10 +91,8 @@ func NewProxy(pxyConf config.ProxyConf, clientCfg config.ClientCommonConf, serve
 }
 
 type BaseProxy struct {
-	closed        bool
-	mu            sync.RWMutex
-	clientCfg     config.ClientCommonConf
-	serverUDPPort int
+	closed bool
+	mu     sync.RWMutex
 	log.Logger
 }
 
@@ -125,7 +122,7 @@ func (pxy *TcpProxy) Close() {
 
 func (pxy *TcpProxy) InWorkConn(conn frpNet.Conn, m *msg.StartWorkConn) {
 	HandleTcpWorkConnection(&pxy.cfg.LocalSvrConf, pxy.proxyPlugin, &pxy.cfg.BaseProxyConf, conn,
-		[]byte(pxy.clientCfg.Token), m)
+		[]byte(g.GlbClientCfg.Token), m)
 }
 
 // HTTP
@@ -154,7 +151,7 @@ func (pxy *HttpProxy) Close() {
 
 func (pxy *HttpProxy) InWorkConn(conn frpNet.Conn, m *msg.StartWorkConn) {
 	HandleTcpWorkConnection(&pxy.cfg.LocalSvrConf, pxy.proxyPlugin, &pxy.cfg.BaseProxyConf, conn,
-		[]byte(pxy.clientCfg.Token), m)
+		[]byte(g.GlbClientCfg.Token), m)
 }
 
 // HTTPS
@@ -183,7 +180,7 @@ func (pxy *HttpsProxy) Close() {
 
 func (pxy *HttpsProxy) InWorkConn(conn frpNet.Conn, m *msg.StartWorkConn) {
 	HandleTcpWorkConnection(&pxy.cfg.LocalSvrConf, pxy.proxyPlugin, &pxy.cfg.BaseProxyConf, conn,
-		[]byte(pxy.clientCfg.Token), m)
+		[]byte(g.GlbClientCfg.Token), m)
 }
 
 // STCP
@@ -212,7 +209,7 @@ func (pxy *StcpProxy) Close() {
 
 func (pxy *StcpProxy) InWorkConn(conn frpNet.Conn, m *msg.StartWorkConn) {
 	HandleTcpWorkConnection(&pxy.cfg.LocalSvrConf, pxy.proxyPlugin, &pxy.cfg.BaseProxyConf, conn,
-		[]byte(pxy.clientCfg.Token), m)
+		[]byte(g.GlbClientCfg.Token), m)
 }
 
 // XTCP
@@ -253,7 +250,7 @@ func (pxy *XtcpProxy) InWorkConn(conn frpNet.Conn, m *msg.StartWorkConn) {
 		Sid:       natHoleSidMsg.Sid,
 	}
 	raddr, _ := net.ResolveUDPAddr("udp",
-		fmt.Sprintf("%s:%d", pxy.clientCfg.ServerAddr, pxy.serverUDPPort))
+		fmt.Sprintf("%s:%d", g.GlbClientCfg.ServerAddr, g.GlbClientCfg.ServerUdpPort))
 	clientConn, err := net.DialUDP("udp", nil, raddr)
 	defer clientConn.Close()
 
@@ -521,7 +518,7 @@ func HandleTcpWorkConnection(localInfo *config.LocalSvrConf, proxyPlugin plugin.
 				DestinationPort:    m.DstPort,
 			}
 
-			if strings.Contains(m.SrcAddr, ".") {
+			if h.SourceAddress.To16() == nil {
 				h.TransportProtocol = pp.TCPv4
 			} else {
 				h.TransportProtocol = pp.TCPv6

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/fatedier/frp/client/proxy"
+	"github.com/fatedier/frp/g"
 	"github.com/fatedier/frp/models/config"
 	"github.com/fatedier/frp/models/msg"
 	"github.com/fatedier/frp/utils/log"
@@ -64,24 +65,16 @@ type Control struct {
 	// last time got the Pong message
 	lastPong time.Time
 
-	// The client configuration
-	clientCfg config.ClientCommonConf
-
 	readerShutdown     *shutdown.Shutdown
 	writerShutdown     *shutdown.Shutdown
 	msgHandlerShutdown *shutdown.Shutdown
-
-	// The UDP port that the server is listening on
-	serverUDPPort int
 
 	mu sync.RWMutex
 
 	log.Logger
 }
 
-func NewControl(runId string, conn frpNet.Conn, session *fmux.Session, clientCfg config.ClientCommonConf,
-	pxyCfgs map[string]config.ProxyConf, visitorCfgs map[string]config.VisitorConf, serverUDPPort int) *Control {
-
+func NewControl(runId string, conn frpNet.Conn, session *fmux.Session, pxyCfgs map[string]config.ProxyConf, visitorCfgs map[string]config.VisitorConf) *Control {
 	ctl := &Control{
 		runId:              runId,
 		conn:               conn,
@@ -91,14 +84,12 @@ func NewControl(runId string, conn frpNet.Conn, session *fmux.Session, clientCfg
 		readCh:             make(chan msg.Message, 100),
 		closedCh:           make(chan struct{}),
 		closedDoneCh:       make(chan struct{}),
-		clientCfg:          clientCfg,
 		readerShutdown:     shutdown.New(),
 		writerShutdown:     shutdown.New(),
 		msgHandlerShutdown: shutdown.New(),
-		serverUDPPort:      serverUDPPort,
 		Logger:             log.NewPrefixLogger(""),
 	}
-	ctl.pm = proxy.NewProxyManager(ctl.sendCh, runId, clientCfg, serverUDPPort)
+	ctl.pm = proxy.NewProxyManager(ctl.sendCh, runId)
 
 	ctl.vm = NewVisitorManager(ctl)
 	ctl.vm.Reload(visitorCfgs)
@@ -170,7 +161,7 @@ func (ctl *Control) ClosedDoneCh() <-chan struct{} {
 
 // connectServer return a new connection to frps
 func (ctl *Control) connectServer() (conn frpNet.Conn, err error) {
-	if ctl.clientCfg.TcpMux {
+	if g.GlbClientCfg.TcpMux {
 		stream, errRet := ctl.session.OpenStream()
 		if errRet != nil {
 			err = errRet
@@ -180,13 +171,13 @@ func (ctl *Control) connectServer() (conn frpNet.Conn, err error) {
 		conn = frpNet.WrapConn(stream)
 	} else {
 		var tlsConfig *tls.Config
-		if ctl.clientCfg.TLSEnable {
+		if g.GlbClientCfg.TLSEnable {
 			tlsConfig = &tls.Config{
 				InsecureSkipVerify: true,
 			}
 		}
-		conn, err = frpNet.ConnectServerByProxyWithTLS(ctl.clientCfg.HttpProxy, ctl.clientCfg.Protocol,
-			fmt.Sprintf("%s:%d", ctl.clientCfg.ServerAddr, ctl.clientCfg.ServerPort), tlsConfig)
+		conn, err = frpNet.ConnectServerByProxyWithTLS(g.GlbClientCfg.HttpProxy, g.GlbClientCfg.Protocol,
+			fmt.Sprintf("%s:%d", g.GlbClientCfg.ServerAddr, g.GlbClientCfg.ServerPort), tlsConfig)
 		if err != nil {
 			ctl.Warn("start new connection to server error: %v", err)
 			return
@@ -206,7 +197,7 @@ func (ctl *Control) reader() {
 	defer ctl.readerShutdown.Done()
 	defer close(ctl.closedCh)
 
-	encReader := crypto.NewReader(ctl.conn, []byte(ctl.clientCfg.Token))
+	encReader := crypto.NewReader(ctl.conn, []byte(g.GlbClientCfg.Token))
 	for {
 		if m, err := msg.ReadMsg(encReader); err != nil {
 			if err == io.EOF {
@@ -226,7 +217,7 @@ func (ctl *Control) reader() {
 // writer writes messages got from sendCh to frps
 func (ctl *Control) writer() {
 	defer ctl.writerShutdown.Done()
-	encWriter, err := crypto.NewWriter(ctl.conn, []byte(ctl.clientCfg.Token))
+	encWriter, err := crypto.NewWriter(ctl.conn, []byte(g.GlbClientCfg.Token))
 	if err != nil {
 		ctl.conn.Error("crypto new writer error: %v", err)
 		ctl.conn.Close()
@@ -255,7 +246,7 @@ func (ctl *Control) msgHandler() {
 	}()
 	defer ctl.msgHandlerShutdown.Done()
 
-	hbSend := time.NewTicker(time.Duration(ctl.clientCfg.HeartBeatInterval) * time.Second)
+	hbSend := time.NewTicker(time.Duration(g.GlbClientCfg.HeartBeatInterval) * time.Second)
 	defer hbSend.Stop()
 	hbCheck := time.NewTicker(time.Second)
 	defer hbCheck.Stop()
@@ -269,7 +260,7 @@ func (ctl *Control) msgHandler() {
 			ctl.Debug("send heartbeat to server")
 			ctl.sendCh <- &msg.Ping{}
 		case <-hbCheck.C:
-			if time.Since(ctl.lastPong) > time.Duration(ctl.clientCfg.HeartBeatTimeout)*time.Second {
+			if time.Since(ctl.lastPong) > time.Duration(g.GlbClientCfg.HeartBeatTimeout)*time.Second {
 				ctl.Warn("heartbeat timeout")
 				// let reader() stop
 				ctl.conn.Close()
