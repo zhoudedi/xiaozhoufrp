@@ -115,7 +115,7 @@ type ServerCommonConf struct {
 	// Custom404Page specifies a path to a custom 404 page to display. If this
 	// value is "", a default page will be displayed. By default, this value is
 	// "".
-	Custom404Page string `json:"custom_404_page"`
+	Custom503Page string `json:"custom_503_page"`
 
 	// AllowPorts specifies a set of ports that clients are able to proxy to.
 	// If the length of this value is 0, all ports are allowed. By default,
@@ -135,6 +135,12 @@ type ServerCommonConf struct {
 	// UserConnTimeout specifies the maximum time to wait for a work
 	// connection. By default, this value is 10.
 	UserConnTimeout int64 `json:"user_conn_timeout"`
+	
+	// API
+	EnableApi  bool   `json:"api_enable"`
+	ApiBaseUrl string `json:"api_baseurl"`
+	ApiToken   string `json:"api_token"`
+	
 	// HTTPPlugins specify the server plugins support HTTP protocol.
 	HTTPPlugins map[string]plugin.HTTPPluginOptions `json:"http_plugins"`
 }
@@ -169,7 +175,12 @@ func GetDefaultServerConf() ServerCommonConf {
 		MaxPortsPerClient: 0,
 		HeartBeatTimeout:  90,
 		UserConnTimeout:   10,
-		Custom404Page:     "",
+		
+		Custom503Page:     "",
+		EnableApi:         false,
+		ApiBaseUrl:        "",
+		ApiToken:          "",
+		
 		HTTPPlugins:       make(map[string]plugin.HTTPPluginOptions),
 	}
 }
@@ -365,8 +376,8 @@ func UnmarshalServerConfFromIni(content string) (cfg ServerCommonConf, err error
 		cfg.TcpMux = true
 	}
 
-	if tmpStr, ok = conf.Get("common", "custom_404_page"); ok {
-		cfg.Custom404Page = tmpStr
+	if tmpStr, ok = conf.Get("common", "custom_503_page"); ok {
+		cfg.Custom503Page = tmpStr
 	}
 
 	if tmpStr, ok = conf.Get("common", "heartbeat_timeout"); ok {
@@ -378,6 +389,20 @@ func UnmarshalServerConfFromIni(content string) (cfg ServerCommonConf, err error
 			cfg.HeartBeatTimeout = v
 		}
 	}
+	if tmpStr, ok = conf.Get("common", "api_enable"); ok && tmpStr == "false" {
+		cfg.EnableApi = false
+	} else {
+		cfg.EnableApi = true
+	}
+
+	if tmpStr, ok = conf.Get("common", "api_baseurl"); ok {
+		cfg.ApiBaseUrl = tmpStr
+	}
+
+	if tmpStr, ok = conf.Get("common", "api_token"); ok {
+		cfg.ApiToken = tmpStr
+	}
+	
 	return
 }
 
