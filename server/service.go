@@ -23,6 +23,7 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"regexp"
 	"time"
 
 	"github.com/fatedier/frp/assets"
@@ -49,6 +50,7 @@ import (
 
 	"github.com/fatedier/golib/net/mux"
 	fmux "github.com/hashicorp/yamux"
+	"github.com/fatedier/frp/extend/api"
 )
 
 const (
@@ -160,7 +162,7 @@ func NewService(cfg config.ServerCommonConf) (svr *Service, err error) {
 	svr.rc.TCPMuxGroupCtl = group.NewTCPMuxGroupCtl(svr.rc.TCPMuxHTTPConnectMuxer)
 
 	// Init 404 not found page
-	vhost.NotFoundPagePath = cfg.Custom404Page
+	vhost.ServiceUnavailablePagePath = cfg.Custom503Page
 
 	var (
 		httpMuxOn  bool
@@ -496,6 +498,8 @@ func (svr *Service) RegisterControl(ctlConn net.Conn, loginMsg *msg.Login) (err 
 		return
 	}
 
+	
+	
 	ctl := NewControl(ctx, svr.rc, svr.pxyManager, svr.pluginManager, svr.authVerifier, ctlConn, loginMsg, svr.cfg, inLimit, outLimit)
 	if oldCtl := svr.ctlManager.Add(loginMsg.RunID, ctl); oldCtl != nil {
 		oldCtl.allShutdown.WaitDone()
