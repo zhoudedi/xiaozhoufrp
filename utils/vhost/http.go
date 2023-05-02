@@ -16,201 +16,108 @@ package vhost
 
 import (
 	"bytes"
-	"context"
-	"errors"
-	"fmt"
-	"log"
-	"net"
+	"io/ioutil"
 	"net/http"
-	"strings"
-	"time"
 
 	frpLog "github.com/fatedier/frp/utils/log"
-
-	"github.com/fatedier/golib/pool"
+	"github.com/fatedier/frp/utils/version"
 )
 
 var (
-	ErrNoDomain = errors.New("no such domain")
+	ServiceUnavailablePagePath = ""
 )
 
-func getHostFromAddr(addr string) (host string) {
-	strs := strings.Split(addr, ":")
-	if len(strs) > 1 {
-		host = strs[0]
+const (
+	ServiceUnavailable = `<!DOCTYPE html>
+<html>
+	<head>
+		<title>503 Service Unavailable</title>
+		<style>
+			body {
+				background: #F1F1F1;
+			}
+			.box {
+				width: 35em;
+				margin: 0 auto;
+				font-family: Tahoma, Verdana, Arial, sans-serif;
+				background: #FFF;
+				padding: 8px 32px;
+				box-shadow: 0px 0px 16px rgba(0,0,0,0.1);
+				margin-top: 80px;
+				font-weight: 300;
+			}
+			.box h1 {
+				font-weight: 300;
+			}
+		</style>
+	</head>
+	<body>
+		<div class="box">
+			<h1>503 Service Unavailable</h1>
+			<p>您访问的网站或服务暂时不可用</p>
+			<p>如果您是隧道所有者，造成无法访问的原因可能有：</p>
+			<ul>
+				<li>您访问的网站使用了内网穿透，但是对应的客户端没有运行。</li>
+				<li>该网站或隧道已被管理员临时或永久禁止连接。</li>
+				<li>域名解析更改还未生效或解析错误，请检查设置是否正确。</li>
+			</ul>
+			<p>如果您是普通访问者，您可以：</p>
+			<ul>
+				<li>稍等一段时间后再次尝试访问此站点。</li>
+				<li>尝试与该网站的所有者取得联系。</li>
+				<li>刷新您的 DNS 缓存或在其他网络环境访问。</li>
+			</ul>
+			<p align="right"><em>Powered by Sakura Panel | Based on Frp</em></p>
+		</div>
+	</body>
+</html>
+`
+)
+
+func getServiceUnavailablePageContent() []byte {
+	var (
+		buf []byte
+		err error
+	)
+	if ServiceUnavailablePagePath != "" {
+		buf, err = ioutil.ReadFile(ServiceUnavailablePagePath)
+		if err != nil {
+			frpLog.Warn("read custom 503 page error: %v", err)
+			buf = []byte(ServiceUnavailable)
+		}
 	} else {
-		host = addr
+		buf = []byte(ServiceUnavailable)
 	}
-	return
+	return buf
 }
 
-type HttpReverseProxyOptions struct {
-	ResponseHeaderTimeoutS int64
+func notFoundResponse() *http.Response {
+	header := make(http.Header)
+	header.Set("server", "frp/"+version.Full()+"-sakurapanel")
+	header.Set("Content-Type", "text/html")
+
+	res := &http.Response{
+		Status:     "Service Unavailable",
+		StatusCode: 503,
+		Proto:      "HTTP/1.0",
+		ProtoMajor: 1,
+		ProtoMinor: 0,
+		Header:     header,
+		Body:       ioutil.NopCloser(bytes.NewReader(getServiceUnavailablePageContent())),
+	}
+	return res
 }
 
-type HttpReverseProxy struct {
-	proxy       *ReverseProxy
-	vhostRouter *VhostRouters
-
-	responseHeaderTimeout time.Duration
-}
-
-func NewHttpReverseProxy(option HttpReverseProxyOptions, vhostRouter *VhostRouters) *HttpReverseProxy {
-	if option.ResponseHeaderTimeoutS <= 0 {
-		option.ResponseHeaderTimeoutS = 60
+func noAuthResponse() *http.Response {
+	header := make(map[string][]string)
+	header["WWW-Authenticate"] = []string{`Basic realm="Restricted"`}
+	res := &http.Response{
+		Status:     "401 Not authorized",
+		StatusCode: 401,
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+		Header:     header,
 	}
-	rp := &HttpReverseProxy{
-		responseHeaderTimeout: time.Duration(option.ResponseHeaderTimeoutS) * time.Second,
-		vhostRouter:           vhostRouter,
-	}
-	proxy := &ReverseProxy{
-		Director: func(req *http.Request) {
-			req.URL.Scheme = "http"
-			url := req.Context().Value("url").(string)
-			oldHost := getHostFromAddr(req.Context().Value("host").(string))
-			host := rp.GetRealHost(oldHost, url)
-			if host != "" {
-				req.Host = host
-			}
-			req.URL.Host = req.Host
-
-			headers := rp.GetHeaders(oldHost, url)
-			for k, v := range headers {
-				req.Header.Set(k, v)
-			}
-		},
-		Transport: &http.Transport{
-			ResponseHeaderTimeout: rp.responseHeaderTimeout,
-			DisableKeepAlives:     true,
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				url := ctx.Value("url").(string)
-				host := getHostFromAddr(ctx.Value("host").(string))
-				remote := ctx.Value("remote").(string)
-				return rp.CreateConnection(host, url, remote)
-			},
-		},
-		BufferPool: newWrapPool(),
-		ErrorLog:   log.New(newWrapLogger(), "", 0),
-		ErrorHandler: func(rw http.ResponseWriter, req *http.Request, err error) {
-			frpLog.Warn("do http proxy request error: %v", err)
-			rw.WriteHeader(http.StatusServiceUnavailable)
-			rw.Write(getServiceUnavailablePageContent())
-		},
-	}
-	rp.proxy = proxy
-	return rp
-}
-
-// Register register the route config to reverse proxy
-// reverse proxy will use CreateConnFn from routeCfg to create a connection to the remote service
-func (rp *HttpReverseProxy) Register(routeCfg VhostRouteConfig) error {
-	err := rp.vhostRouter.Add(routeCfg.Domain, routeCfg.Location, &routeCfg)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-// UnRegister unregister route config by domain and location
-func (rp *HttpReverseProxy) UnRegister(domain string, location string) {
-	rp.vhostRouter.Del(domain, location)
-}
-
-func (rp *HttpReverseProxy) GetRealHost(domain string, location string) (host string) {
-	vr, ok := rp.getVhost(domain, location)
-	if ok {
-		host = vr.payload.(*VhostRouteConfig).RewriteHost
-	}
-	return
-}
-
-func (rp *HttpReverseProxy) GetHeaders(domain string, location string) (headers map[string]string) {
-	vr, ok := rp.getVhost(domain, location)
-	if ok {
-		headers = vr.payload.(*VhostRouteConfig).Headers
-	}
-	return
-}
-
-// CreateConnection create a new connection by route config
-func (rp *HttpReverseProxy) CreateConnection(domain string, location string, remoteAddr string) (net.Conn, error) {
-	vr, ok := rp.getVhost(domain, location)
-	if ok {
-		fn := vr.payload.(*VhostRouteConfig).CreateConnFn
-		if fn != nil {
-			return fn(remoteAddr)
-		}
-	}
-	return nil, fmt.Errorf("%v: %s %s", ErrNoDomain, domain, location)
-}
-
-func (rp *HttpReverseProxy) CheckAuth(domain, location, user, passwd string) bool {
-	vr, ok := rp.getVhost(domain, location)
-	if ok {
-		checkUser := vr.payload.(*VhostRouteConfig).Username
-		checkPasswd := vr.payload.(*VhostRouteConfig).Password
-		if (checkUser != "" || checkPasswd != "") && (checkUser != user || checkPasswd != passwd) {
-			return false
-		}
-	}
-	return true
-}
-
-// getVhost get vhost router by domain and location
-func (rp *HttpReverseProxy) getVhost(domain string, location string) (vr *VhostRouter, ok bool) {
-	// first we check the full hostname
-	// if not exist, then check the wildcard_domain such as *.example.com
-	vr, ok = rp.vhostRouter.Get(domain, location)
-	if ok {
-		return
-	}
-
-	domainSplit := strings.Split(domain, ".")
-	if len(domainSplit) < 3 {
-		return nil, false
-	}
-
-	for {
-		if len(domainSplit) < 3 {
-			return nil, false
-		}
-
-		domainSplit[0] = "*"
-		domain = strings.Join(domainSplit, ".")
-		vr, ok = rp.vhostRouter.Get(domain, location)
-		if ok {
-			return vr, true
-		}
-		domainSplit = domainSplit[1:]
-	}
-	return
-}
-
-func (rp *HttpReverseProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	domain := getHostFromAddr(req.Host)
-	location := req.URL.Path
-	user, passwd, _ := req.BasicAuth()
-	if !rp.CheckAuth(domain, location, user, passwd) {
-		rw.Header().Set("WWW-Authenticate", `Basic realm="Restricted"`)
-		http.Error(rw, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
-		return
-	}
-	rp.proxy.ServeHTTP(rw, req)
-}
-
-type wrapPool struct{}
-
-func newWrapPool() *wrapPool { return &wrapPool{} }
-
-func (p *wrapPool) Get() []byte { return pool.GetBuf(32 * 1024) }
-
-func (p *wrapPool) Put(buf []byte) { pool.PutBuf(buf) }
-
-type wrapLogger struct{}
-
-func newWrapLogger() *wrapLogger { return &wrapLogger{} }
-
-func (l *wrapLogger) Write(p []byte) (n int, err error) {
-	frpLog.Warn("%s", string(bytes.TrimRight(p, "\n")))
-	return len(p), nil
+	return res
 }
