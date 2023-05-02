@@ -12,7 +12,7 @@ Sakura Frp 是一个基于 frp 的二次开发项目，在原版的基础上增�
 编译方法（编译过程需要科学上网）：
 
 ```bash
-git clone https://github.com/ZeroDream-CN/SakuraFrp
+git clone https://github.com/zhoudedi/xiaozhoufrp
 cd SakuraFrp/
 make
 ```
